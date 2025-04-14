@@ -11,8 +11,7 @@ import cv2
 import glob
 import threading
 import numpy as np
-from moviepy import VideoFileClip
-from moviepy.video.fx import Crop, Resize
+from moviepy import VideoFileClip, ImageSequenceClip
 from typing import Dict, List, Tuple, Optional, Any, Union
 
 
@@ -328,62 +327,61 @@ class VideoProcessor:
             clip = VideoFileClip(video_path).subclipped(start_time, end_time)
 
             # 如果有选区，进行裁剪
-            if selection:
+            if selection and all(isinstance(x, (int, float)) for x in selection):
+                self.log(f"检测到选区: {selection}")
+
                 try:
                     # 获取视频原始尺寸
-                    width, height = clip.size
+                    orig_width, orig_height = clip.size
+                    self.log(f"视频尺寸: {orig_width}x{orig_height}")
 
                     # 计算裁剪区域
-                    crop_x = int(selection[0] * width)
-                    crop_y = int(selection[1] * height)
-                    crop_width = int(selection[2] * width)
-                    crop_height = int(selection[3] * height)
+                    crop_x = max(0, int(selection[0] * orig_width))
+                    crop_y = max(0, int(selection[1] * orig_height))
+                    crop_width = min(int(selection[2] * orig_width), orig_width - crop_x)
+                    crop_height = min(int(selection[3] * orig_height), orig_height - crop_y)
 
-                    # 确保裁剪区域在有效范围内
-                    crop_x = max(0, min(crop_x, width - 1))
-                    crop_y = max(0, min(crop_y, height - 1))
-                    crop_width = max(1, min(crop_width, width - crop_x))
-                    crop_height = max(1, min(crop_height, height - crop_y))
+                    # 确保裁剪区域有效
+                    if crop_width <= 0 or crop_height <= 0:
+                        self.log(f"无效的裁剪区域: ({crop_x}, {crop_y}, {crop_width}, {crop_height})", 'warning')
+                        self.log(f"将使用原始视频尺寸")
+                    else:
+                        self.log(f"裁剪区域: ({crop_x}, {crop_y}, {crop_width}, {crop_height})")
 
-                    # 尝试多种裁剪方法
-                    try:
-                        # 方法1: 使用direct crop方法
-                        self.log(f"尝试使用crop方法裁剪...")
-                        clip = clip.crop(
-                            x1=crop_x,
-                            y1=crop_y,
-                            x2=crop_x + crop_width,
-                            y2=crop_y + crop_height
-                        )
-                    except (AttributeError, TypeError) as e:
-                        self.log(f"crop方法失败，尝试其他方法: {str(e)}")
+                        # 手动处理帧并裁剪
+                        frames = []
+                        total_frames = int(clip.duration * clip.fps)
+                        self.log(f"处理 {total_frames} 帧...")
 
-                        # 方法2: 使用crop_x
-                        try:
-                            self.log(f"尝试使用cropx方法裁剪...")
-                            clip = Crop(clip,
-                                        x1=crop_x,
-                                        y1=crop_y,
-                                        x2=crop_x + crop_width,
-                                        y2=crop_y + crop_height)
-                        except Exception as e2:
-                            self.log(f"cropx方法失败: {str(e2)}")
+                        # 每10%进度报告一次
+                        report_interval = max(1, total_frames // 10)
 
-                            # 方法3: 使用缩放和裁剪的组合
-                            try:
-                                self.log(f"尝试使用缩放方法裁剪...")
-                                # 创建新尺寸的剪辑
-                                resized_clip = clip.resize(newsize=(crop_width, crop_height))
-                                clip = resized_clip
-                            except Exception as e3:
-                                self.log(f"缩放方法失败: {str(e3)}")
-                                self.log(f"无法裁剪视频，将使用原始尺寸")
+                        for i, t in enumerate(np.arange(0, clip.duration, 1.0 / clip.fps)):
+                            # 获取原始帧
+                            frame = clip.get_frame(t)
 
-                    self.log(f"使用框选裁剪区域: X={crop_x}, Y={crop_y}, 宽={crop_width}, 高={crop_height}")
+                            # 裁剪帧
+                            cropped_frame = frame[crop_y:crop_y + crop_height, crop_x:crop_x + crop_width]
+
+                            # 添加到帧列表
+                            frames.append(cropped_frame)
+
+                            # 报告进度
+                            if i % report_interval == 0 or i == total_frames - 1:
+                                progress = (i + 1) / total_frames * 100
+                                self.log(f"裁剪进度: {progress:.1f}% ({i + 1}/{total_frames})")
+
+                        # 用裁剪后的帧创建新的clip
+                        self.log(f"创建新的裁剪后视频剪辑...")
+                        clip = ImageSequenceClip(frames, fps=clip.fps)
+                        self.log(f"裁剪后视频尺寸: {clip.size}")
+
                 except Exception as e:
-                    self.log(f"裁剪视频失败: {str(e)}", 'warning')
+                    self.log(f"裁剪过程中发生错误: {str(e)}", 'error')
+                    self.log("将使用原始视频")
 
             # 生成GIF
+            self.log(f"正在写入GIF文件: {output_file}")
             clip.write_gif(
                 output_file,
                 fps=fps

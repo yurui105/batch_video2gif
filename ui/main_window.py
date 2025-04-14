@@ -456,6 +456,11 @@ class MainWindow(QMainWindow):
             if not self.video_processor.abort_flag:
                 QMessageBox.information(self, "处理完成", "所有视频已处理完成！")
 
+            # 恢复检查定时器状态
+            if hasattr(self, 'check_processing_timer'):
+                if self.check_processing_timer.isActive():
+                    self.check_processing_timer.stop()
+
     def abort_processing(self):
         """中止处理"""
         if not self.processing:

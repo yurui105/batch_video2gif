@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+
 # -*- coding: utf-8 -*-
 
 """
@@ -21,6 +21,9 @@ from PyQt5.QtGui import QPainter, QPen, QColor, QImage, QPixmap, QFont, QBrush
 
 class VideoDisplay(QWidget):
     """视频显示组件，负责显示视频帧和处理框选操作"""
+
+    # 添加一个信号用于通知选区变化
+    selection_changed = pyqtSignal(object)  # 选区变化信号，参数为新的选区
 
     def __init__(self):
         """初始化视频显示组件"""
@@ -317,6 +320,8 @@ class VideoDisplay(QWidget):
                 if self.is_adjusting:
                     # 结束调整
                     self.is_adjusting = False
+                    # 通知选区已改变
+                    self.selection_changed.emit(self.selection_region)
                 elif self.selection_active:
                     # 结束框选
                     self.selection_active = False
@@ -350,6 +355,8 @@ class VideoDisplay(QWidget):
                         rel_height = height / self.display_rect.height()
 
                         self.selection_region = (rel_x, rel_y, rel_width, rel_height)
+                        # 通知选区已改变
+                        self.selection_changed.emit(self.selection_region)
 
                     self.update()
         except Exception as e:
@@ -608,6 +615,8 @@ class VideoDisplay(QWidget):
         self.selection_end = None
         self.selection_active = False
         self.update()
+        # 发出选区变化信号
+        self.selection_changed.emit(region)
 
     def clear_selection(self):
         """清除框选"""
@@ -617,6 +626,8 @@ class VideoDisplay(QWidget):
         self.selection_active = False
         self.is_adjusting = False
         self.update()
+        # 发出选区变化信号
+        self.selection_changed.emit(None)
 
     def get_selection_region(self):
         """
@@ -770,6 +781,7 @@ class VideoPreview(QWidget):
 
         # 框选相关变量
         self.selection_regions = {}  # 存储每个视频的框选区域
+        self.selection_changed = False  # 标记选区是否被修改
 
         # 连接信号
         self.connect_signals()
@@ -815,6 +827,17 @@ class VideoPreview(QWidget):
         # 视频显示区域
         self.video_display = VideoDisplay()
 
+        # 添加选区状态标签
+        self.selection_status = QLabel("选区状态: 无选区")
+        self.selection_status.setAlignment(Qt.AlignCenter)
+        self.selection_status.setStyleSheet("""
+            font-size: 12px;
+            padding: 3px;
+            background-color: #f8f8f8;
+            color: #666;
+            border-top: 1px solid #ddd;
+        """)
+
         # 视频控制工具栏
         control_layout = QHBoxLayout()
 
@@ -842,6 +865,7 @@ class VideoPreview(QWidget):
         control_layout.addWidget(self.clear_selection_button)
 
         preview_layout.addWidget(self.video_display, 1)
+        preview_layout.addWidget(self.selection_status)
         preview_layout.addLayout(control_layout)
 
         # 添加到分割器
@@ -946,6 +970,9 @@ class VideoPreview(QWidget):
         self.progress_slider.sliderReleased.connect(self.on_slider_released)
         self.progress_slider.valueChanged.connect(self.on_slider_value_changed)
         self.clear_selection_button.clicked.connect(self.clear_selection)
+
+        # 连接选区变化信号
+        self.video_display.selection_changed.connect(self.on_selection_changed)
 
         # 添加定时器更新进度条和时间标签
         self.update_timer = QTimer(self)
@@ -1053,10 +1080,32 @@ class VideoPreview(QWidget):
 
             # 检查是否有保存的框选区域
             if video_path in self.selection_regions and self.selection_regions.get(video_path):
-                self.video_display.set_selection_region(self.selection_regions[video_path])
+                selection = self.selection_regions[video_path]
+                self.video_display.set_selection_region(selection)
                 print(f"已恢复视频 {os.path.basename(video_path)} 的选区")
+
+                # 更新选区状态显示
+                x, y, w, h = selection
+                self.selection_status.setText(f"选区状态: 已选择区域 ({x:.2f}, {y:.2f}, {w:.2f}, {h:.2f})")
+                self.selection_status.setStyleSheet("""
+                    font-size: 12px;
+                    padding: 3px;
+                    background-color: #e6f7e6;
+                    color: #28a745;
+                    border-top: 1px solid #ddd;
+                    font-weight: bold;
+                """)
             else:
                 self.video_display.clear_selection()
+                # 更新选区状态显示
+                self.selection_status.setText("选区状态: 无选区")
+                self.selection_status.setStyleSheet("""
+                    font-size: 12px;
+                    padding: 3px;
+                    background-color: #f8f8f8;
+                    color: #666;
+                    border-top: 1px solid #ddd;
+                """)
 
             # 发送视频加载信号
             self.video_loaded.emit(video_path)
@@ -1207,7 +1256,10 @@ class VideoPreview(QWidget):
     def clear_selection(self):
         """清除当前视频的框选"""
         if self.current_video:
+            # 清除当前视频的选区
             self.selection_regions[self.current_video] = None
+            print(f"已清除视频 {os.path.basename(self.current_video)} 的选区")
+            # 清除显示
             self.video_display.clear_selection()
 
     def has_videos(self):
@@ -1244,3 +1296,39 @@ class VideoPreview(QWidget):
         except Exception as e:
             print(f"获取选择区域错误: {str(e)}")
             return {}
+
+    def on_selection_changed(self, selection):
+        """
+        处理选区变化事件
+
+        Args:
+            selection: 新的选区，相对坐标(x, y, width, height)
+        """
+        if self.current_video:
+            # 保存当前视频的选区
+            self.selection_regions[self.current_video] = selection
+
+            # 更新选区状态显示
+            if selection:
+                x, y, w, h = selection
+                self.selection_status.setText(f"选区状态: 已选择区域 ({x:.2f}, {y:.2f}, {w:.2f}, {h:.2f})")
+                self.selection_status.setStyleSheet("""
+                        font-size: 12px;
+                        padding: 3px;
+                        background-color: #e6f7e6;
+                        color: #28a745;
+                        border-top: 1px solid #ddd;
+                        font-weight: bold;
+                    """)
+            else:
+                self.selection_status.setText("选区状态: 无选区")
+                self.selection_status.setStyleSheet("""
+                        font-size: 12px;
+                        padding: 3px;
+                        background-color: #f8f8f8;
+                        color: #666;
+                        border-top: 1px solid #ddd;
+                    """)
+
+            print(f"已更新视频 {os.path.basename(self.current_video)} 的选区: {selection}")  # !/usr/bin/env python
+
