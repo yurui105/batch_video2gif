@@ -13,9 +13,9 @@ from PyQt5.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QLineEdit, QPushButton, QTextEdit, QFileDialog,
     QGroupBox, QRadioButton, QSlider, QSpinBox, QDoubleSpinBox,
-    QMessageBox, QSplitter, QFrame, QToolButton
+    QMessageBox, QSplitter, QFrame, QToolButton, QProgressBar, QApplication
 )
-from PyQt5.QtCore import Qt, QSize, pyqtSlot, QTimer
+from PyQt5.QtCore import Qt, QSize, pyqtSlot, QTimer, pyqtSignal, QObject
 from PyQt5.QtGui import QIcon, QFont, QColor, QPalette
 
 from core.video_processor import VideoProcessor
@@ -25,6 +25,10 @@ from ui.components.video_preview import VideoPreview
 
 class MainWindow(QMainWindow):
     """主窗口类"""
+    # 定义信号
+    progress_updated = pyqtSignal(int)
+    processing_completed = pyqtSignal()
+    processing_error = pyqtSignal(str)
 
     def __init__(self):
         """初始化主窗口"""
@@ -45,6 +49,14 @@ class MainWindow(QMainWindow):
 
         # 设置视频处理状态
         self.processing = False
+        
+        # 初始化进度条
+        self.update_progress_bar(0)
+
+        # 初始化信号
+        self.progress_updated.connect(self.update_progress_bar, Qt.QueuedConnection)
+        self.processing_completed.connect(self.on_processing_completed, Qt.QueuedConnection)
+        self.processing_error.connect(self.on_processing_error, Qt.QueuedConnection)
 
     def init_ui(self):
         """初始化UI"""
@@ -160,6 +172,15 @@ class MainWindow(QMainWindow):
         self.start_button = QPushButton("开始处理")
         self.start_button.setMinimumHeight(40)
         param_layout.addWidget(self.start_button, 5, 0, 1, 3)
+        
+        # 添加进度条
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setMinimum(0)
+        self.progress_bar.setMaximum(100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setTextVisible(True)
+        self.progress_bar.setFormat("%p%")
+        param_layout.addWidget(self.progress_bar, 6, 0, 1, 3)
 
         # 添加参数部分到上部分布局
         top_layout.addWidget(param_widget)
@@ -249,17 +270,17 @@ class MainWindow(QMainWindow):
                 background: #007bff;
                 border-radius: 4px;
             }
-            QGroupBox {
-                border: 1px solid #ddd;
-                border-radius: 5px;
-                margin-top: 10px;
-                font-weight: bold;
-                padding-top: 10px;
+            QProgressBar {
+                border: 1px solid #ced4da;
+                border-radius: 4px;
+                background-color: #f5f5f5;
+                text-align: center;
+                height: 20px;
+                margin-top: 5px;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 3px 0 3px;
+            QProgressBar::chunk {
+                background-color: #28a745;
+                border-radius: 3px;
             }
         """)
 
@@ -313,6 +334,9 @@ class MainWindow(QMainWindow):
 
         # 输入路径改变时加载视频
         self.input_path_edit.editingFinished.connect(self.load_videos_from_path)
+
+        # 设置视频处理器的进度回调
+        self.video_processor.set_progress_callback(self.on_progress)
 
     def browse_input_path(self):
         """浏览输入路径"""
@@ -369,38 +393,95 @@ class MainWindow(QMainWindow):
             value: 新的质量值
         """
         self.quality_label.setText(f"{value}%")
+    
+    def on_progress(self, value):
+        """
+        处理进度更新
+        
+        Args:
+            value: 进度值(0-100)
+        """
+        try:
+            self.logger.debug(f"收到进度更新: {value}%")
+            # 使用信号发送进度更新
+            self.progress_updated.emit(value)
+        except Exception as e:
+            self.logger.error(f"进度回调异常: {str(e)}")
+
+    def update_progress_bar(self, value):
+        """
+        更新进度条显示
+        
+        Args:
+            value: 进度值(0-100)
+        """
+        try:
+            # 确保值在有效范围内
+            value = max(0, min(100, value))
+            
+            # 更新进度条
+            self.progress_bar.setValue(value)
+            self.progress_bar.repaint()
+            
+            # 确保UI更新
+            QApplication.processEvents()
+            
+            self.logger.debug(f"进度条更新到: {value}%")
+        except Exception as e:
+            self.logger.error(f"更新进度条时发生错误: {str(e)}")
+
+    def on_processing_completed(self):
+        """处理视频处理完成事件"""
+        try:
+            self.logger.info("视频处理完成")
+            self.processing = False
+            self.enable_inputs(True)
+            QMessageBox.information(self, "完成", "视频处理完成！")
+        except Exception as e:
+            self.logger.error(f"处理完成事件时发生错误: {str(e)}")
+
+    def on_processing_error(self, error_message):
+        """
+        处理视频处理错误事件
+        
+        Args:
+            error_message: 错误信息
+        """
+        try:
+            self.logger.error(f"处理过程中发生错误: {error_message}")
+            self.processing = False
+            self.enable_inputs(True)
+            QMessageBox.critical(self, "错误", f"处理过程中发生错误：\n{error_message}")
+        except Exception as e:
+            self.logger.error(f"处理错误事件时发生错误: {str(e)}")
 
     def start_processing(self):
         """开始处理视频"""
-        # 检查是否正在处理
         if self.processing:
+            # 如果已经在处理，则中止处理
             self.abort_processing()
             return
 
-        # 检查输入路径
+        # 获取输入和输出路径
         input_path = self.input_path_edit.text().strip()
-        if not input_path or not os.path.isdir(input_path):
-            self.logger.error("请选择有效的输入目录")
-            return
-
-        # 检查输出路径
         output_path = self.output_path_edit.text().strip()
-        if not output_path:
-            self.logger.error("请选择有效的输出目录")
+
+        # 检查路径是否有效
+        if not input_path or not os.path.isdir(input_path):
+            QMessageBox.warning(self, "路径错误", "请选择有效的输入路径")
             return
 
-        # 创建输出目录
+        if not output_path:
+            QMessageBox.warning(self, "路径错误", "请选择有效的输出路径")
+            return
+
+        # 创建输出目录(如果不存在)
         if not os.path.exists(output_path):
             try:
                 os.makedirs(output_path)
             except Exception as e:
-                self.logger.error(f"创建输出目录失败: {str(e)}")
+                QMessageBox.critical(self, "错误", f"无法创建输出目录: {str(e)}")
                 return
-
-        # 检查是否有视频
-        if not self.video_preview.has_videos():
-            self.logger.error("没有找到可处理的视频文件")
-            return
 
         # 获取参数
         start_time = self.start_time_spin.value()
@@ -416,71 +497,78 @@ class MainWindow(QMainWindow):
         # 获取质量
         quality = self.quality_slider.value()
 
-        # 获取视频选区
+        # 获取视频预览选区
         selection_regions = self.video_preview.get_selection_regions()
 
-        # 设置UI状态
-        self.processing = True
-        self.start_button.setText("取消处理")
-        self.disable_inputs(True)
+        # 重置进度条
+        self.progress_bar.setValue(0)
+        print("重置进度条为0%")
+        self.progress_bar.repaint()
+        QApplication.processEvents()
 
         # 开始处理
         try:
+            self.processing = True
+            self.disable_inputs(True)
+            self.start_button.setText("中止处理")
+
+            # 调用视频处理器进行处理
             self.video_processor.process_videos(
-                input_path, output_path, start_time,
-                split_mode, split_value, quality,
-                selection_regions
+                input_path, output_path, start_time, split_mode, split_value, quality, selection_regions
             )
 
             # 启动定时器检查处理状态
-            self.check_processing_timer = QTimer()
-            self.check_processing_timer.timeout.connect(self.check_processing_status)
-            self.check_processing_timer.start(500)  # 每500毫秒检查一次
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.check_processing_status)
+            self.timer.start(500)  # 每500毫秒检查一次
+            print("启动处理状态检查定时器")
 
         except Exception as e:
-            self.logger.error(f"启动处理任务失败: {str(e)}")
+            QMessageBox.critical(self, "错误", f"处理视频时发生错误: {str(e)}")
             self.processing = False
-            self.start_button.setText("开始处理")
             self.disable_inputs(False)
+            self.start_button.setText("开始处理")
 
     def check_processing_status(self):
         """检查处理状态"""
         if not self.video_processor.processing:
-            # 处理完成或中止
-            self.check_processing_timer.stop()
+            # 处理已完成
             self.processing = False
-            self.start_button.setText("开始处理")
             self.disable_inputs(False)
-
-            # 弹出完成提示
+            self.start_button.setText("开始处理")
+            self.timer.stop()
+            
+            # 确保进度条显示完成状态
+            self.progress_bar.setValue(100)
+            self.progress_bar.repaint()
+            
+            # 如果不是因中止而完成，显示完成消息
             if not self.video_processor.abort_flag:
                 QMessageBox.information(self, "处理完成", "所有视频已处理完成！")
 
-            # 恢复检查定时器状态
-            if hasattr(self, 'check_processing_timer'):
-                if self.check_processing_timer.isActive():
-                    self.check_processing_timer.stop()
-
     def abort_processing(self):
-        """中止处理"""
-        if not self.processing:
-            return
-
+        """中止处理任务"""
         # 设置中止标志
         self.video_processor.abort_processing()
+        
+        # 停止定时器
+        if hasattr(self, 'timer') and self.timer.isActive():
+            self.timer.stop()
+            
+        # 更新UI状态
         self.start_button.setEnabled(False)
         self.start_button.setText("正在中止...")
 
     def disable_inputs(self, disabled):
         """
         禁用/启用输入控件
-
+        
         Args:
             disabled: 是否禁用
         """
         self.input_path_edit.setEnabled(not disabled)
-        self.output_path_edit.setEnabled(not disabled)
         self.browse_input_button.setEnabled(not disabled)
+        self.output_path_edit.setEnabled(not disabled)
         self.browse_output_button.setEnabled(not disabled)
         self.start_time_spin.setEnabled(not disabled)
         self.duration_radio.setEnabled(not disabled)
@@ -488,6 +576,15 @@ class MainWindow(QMainWindow):
         self.split_duration_spin.setEnabled(not disabled and self.duration_radio.isChecked())
         self.split_count_spin.setEnabled(not disabled and self.count_radio.isChecked())
         self.quality_slider.setEnabled(not disabled)
+
+    def enable_inputs(self, enabled):
+        """
+        启用/禁用输入控件
+        
+        Args:
+            enabled: 是否启用
+        """
+        self.disable_inputs(not enabled)
 
     def closeEvent(self, event):
         """

@@ -13,6 +13,7 @@ import threading
 import numpy as np
 from moviepy import VideoFileClip, ImageSequenceClip
 from typing import Dict, List, Tuple, Optional, Any, Union
+from PyQt5.QtWidgets import QApplication
 
 
 class VideoProcessor:
@@ -23,6 +24,7 @@ class VideoProcessor:
         self.logger = None
         self.processing = False
         self.abort_flag = False
+        self.progress_callback = None
 
     def set_logger(self, logger):
         """
@@ -32,6 +34,15 @@ class VideoProcessor:
             logger: 日志记录器实例
         """
         self.logger = logger
+
+    def set_progress_callback(self, callback):
+        """
+        设置进度回调函数
+        
+        Args:
+            callback: 回调函数，接收进度值(0-100)作为参数
+        """
+        self.progress_callback = callback
 
     def log(self, message: str, level: str = 'info'):
         """
@@ -169,6 +180,9 @@ class VideoProcessor:
         """
         try:
             total_videos = len(videos)
+            
+            # 初始化进度为0
+            self._update_progress(0)
 
             for i, video_path in enumerate(videos):
                 # 检查是否请求中止
@@ -178,6 +192,14 @@ class VideoProcessor:
 
                 try:
                     self.log(f"正在处理视频 [{i + 1}/{total_videos}]: {os.path.basename(video_path)}")
+                    
+                    # 计算当前视频的进度范围
+                    # 每个视频占总进度的 1/total_videos
+                    video_progress_start = int((i / total_videos) * 100)
+                    video_progress_end = int(((i + 1) / total_videos) * 100)
+                    
+                    # 更新进度到当前视频的开始位置
+                    self._update_progress(video_progress_start)
 
                     # 创建输出文件夹
                     video_name = os.path.splitext(os.path.basename(video_path))[0]
@@ -187,19 +209,25 @@ class VideoProcessor:
                     # 获取视频选区
                     selection = selection_regions.get(video_path)
 
-                    # 处理单个视频
+                    # 处理单个视频，传入进度范围
                     self.process_single_video(
                         video_path, video_output_dir, start_time,
-                        split_mode, split_value, quality, selection
+                        split_mode, split_value, quality, selection,
+                        video_progress_start, video_progress_end
                     )
 
                     self.log(f"视频 {os.path.basename(video_path)} 处理完成")
+
+                    # 处理完单个视频后更新进度到当前视频的结束位置
+                    self._update_progress(video_progress_end)
 
                 except Exception as e:
                     self.log(f"处理视频 {os.path.basename(video_path)} 时发生错误: {str(e)}", 'error')
 
             if not self.abort_flag:
                 self.log("所有视频处理完成！")
+                # 完成时设置进度为100%
+                self._update_progress(100)
 
         except Exception as e:
             self.log(f"处理过程中发生错误: {str(e)}", 'error')
@@ -213,7 +241,9 @@ class VideoProcessor:
                              split_mode: str,
                              split_value: Union[int, float],
                              quality: int,
-                             selection: Optional[Tuple[float, float, float, float]]) -> None:
+                             selection: Optional[Tuple[float, float, float, float]],
+                             progress_start: int,
+                             progress_end: int) -> None:
         """
         处理单个视频
 
@@ -225,6 +255,8 @@ class VideoProcessor:
             split_value: 分割值
             quality: GIF质量
             selection: 视频选区
+            progress_start: 进度起始值(0-100)
+            progress_end: 进度结束值(0-100)
         """
         try:
             # 打开视频
@@ -271,7 +303,8 @@ class VideoProcessor:
                 splits = [actual_start + i * segment_duration for i in range(split_count + 1)]
 
             # 处理每个分段
-            for i in range(len(splits) - 1):
+            total_segments = len(splits) - 1
+            for i in range(total_segments):
                 # 检查是否请求中止
                 if self.abort_flag:
                     break
@@ -284,6 +317,13 @@ class VideoProcessor:
                     video_path, output_dir, i + 1,
                     start, end, quality, selection
                 )
+
+                # 更新分段进度
+                # 计算当前分段在整个视频中的进度
+                segment_progress = int((i + 1) / total_segments * (progress_end - progress_start))
+                # 加上视频的起始进度
+                current_progress = progress_start + segment_progress
+                self._update_progress(current_progress)
 
             # 关闭视频
             clip.close()
@@ -395,3 +435,22 @@ class VideoProcessor:
         except Exception as e:
             self.log(f"生成GIF时发生错误: {str(e)}", 'error')
             raise
+
+    def _update_progress(self, value):
+        """
+        更新进度
+        
+        Args:
+            value: 进度值(0-100)
+        """
+        if self.progress_callback:
+            try:
+                # 确保值在有效范围内
+                value = max(0, min(100, value))
+                # 直接调用回调函数
+                self.progress_callback(value)
+                # 确保UI更新
+                QApplication.processEvents()
+            except Exception as e:
+                if self.logger:
+                    self.logger.error(f"更新进度时发生错误: {str(e)}")
